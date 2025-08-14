@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Biểu đồ quan hệ mặn - thủy triều - xả</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+  <style>
+    body {
+      font-family: Arial;
+      margin: 0;
+      padding: 1rem;
+      overflow-x: auto;
+    }
+    canvas {
+      width: 2000px;
+      height: 400px;
+    }
+  </style>
+</head>
+<body>
+  <h3>📊 Diễn biến quan hệ mặn – xả – thủy triều (5 ngày gần nhất)</h3>
+  <canvas id="chart"></canvas>
+  <p id="error" style="color:red"></p>
+
+  <script>
+    const ctx = document.getElementById('chart').getContext('2d');
+    const scriptURL = 'https://script.google.com/macros/s/AKfycbxpM9MuEDcS4LDepZ_Oqci1dsQKC1OWo_wQEWNVdpqczNasWf13_NLD2hqzHNtq2ac-JQ/exec';
+
+    fetch(scriptURL)
+      .then(res => res.json())
+      .then(data => {
+        const labels = [], qVuGia = [], qThuBon = [], mucNuoc = [], doMan = [], nguongMan = [];
+
+        data.forEach(row => {
+          if (!row.Ngay || !row.Gio || !row.VuGia || !row.ThuBon || !row.MucNuocTrieu || !row.DoMan) return;
+
+          const [day, month, year] = row.Ngay.trim().split('/');
+          const hour = row.Gio.trim().slice(0, 2);
+          labels.push(`${day}-${month} ${hour}h`);
+          qVuGia.push(+row.VuGia);
+          qThuBon.push(+row.ThuBon);
+          mucNuoc.push(+row.MucNuocTrieu);
+          doMan.push(+row.DoMan);
+          nguongMan.push(0.8);
+        });
+
+        const visible = 24; // 1 ngày
+        const start = Math.max(0, labels.length - visible);
+
+        new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              {
+                label: 'Q về Vu Gia (m³/s)',
+                data: qVuGia,
+                borderColor: 'red',
+                borderWidth: 2,
+                tension: 0.4,
+                yAxisID: 'y',
+              },
+              {
+                label: 'Q về Thu Bồn (m³/s)',
+                data: qThuBon,
+                borderColor: 'green',
+                borderWidth: 2,
+                tension: 0.4,
+                yAxisID: 'y',
+              },
+              {
+                label: 'Mực nước triều (m)',
+                data: mucNuoc,
+                borderColor: 'blue',
+                borderWidth: 2,
+                tension: 0.4,
+                yAxisID: 'y1',
+              },
+              {
+                label: 'Độ mặn Trạm Tứ Câu (%)',
+                data: doMan,
+                borderColor: 'orange',
+                borderWidth: 2,
+                tension: 0.4,
+                yAxisID: 'y2',
+              },
+              {
+                label: 'Ngưỡng mặn 0.8‰',
+                data: nguongMan,
+                borderColor: 'gray',
+                borderDash: [5, 5],
+                borderWidth: 1,
+                pointRadius: 0,
+                yAxisID: 'y2',
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: { position: 'bottom' },
+              zoom: {
+                pan: { enabled: true, mode: 'x' },
+                zoom: { enabled: false }
+              }
+            },
+            scales: {
+              y: {
+                type: 'linear',
+                position: 'left',
+                title: { display: true, text: 'Lưu lượng (m³/s)' }
+              },
+              y1: {
+                type: 'linear',
+                position: 'right',
+                title: { display: true, text: 'Mực nước triều (m)' },
+                grid: { drawOnChartArea: false }
+              },
+              y2: {
+                type: 'linear',
+                position: 'right',
+                title: { display: true, text: 'Độ mặn (‰)' },
+                grid: { drawOnChartArea: false }
+              },
+              x: {
+                ticks: {
+                  autoSkip: false,
+                  callback: function(val, idx) {
+                    const label = labels[idx];
+                    const hour = label.split(' ')[1];
+                    return ["00h", "06h", "12h", "18h"].includes(hour) ? label : '';
+                  }
+                },
+                min: start,
+                max: start + visible - 1
+              }
+            }
+          }
+        });
+      })
+      .catch(e => {
+        document.getElementById('error').textContent = 'Không thể tải dữ liệu: ' + e;
+      });
+  </script>
+</body>
+</html>
