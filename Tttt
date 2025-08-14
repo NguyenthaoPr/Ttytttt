@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=2" />
+<title>Mặn – Trạm bơm Tứ Câu</title>
+
+<!-- Chart.js + time adapter + CSV + annotation -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+
+<style>
+  :root{--bg:#0b1e33;--card:#0e2a47;--ink:#eaf6ff;--header1:#164a7a;--header2:#1d5f9a}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:600 16px/1.5 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  .wrap{max-width:980px;margin:auto;padding:12px}
+  .card{background:var(--card);border-radius:18px;box-shadow:0 10px 28px rgba(0,0,0,.35);position:relative;overflow:hidden}
+
+  .topbar{background:linear-gradient(180deg,var(--header1),var(--header2));padding:10px 14px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px}
+  .title{font-weight:800;letter-spacing:.5px;font-size:22px;text-align:center;flex:1 1 auto;order:1}
+  .hud{display:flex;gap:10px;align-items:center;flex:0 0 auto;order:2}
+  #clock{font-size:13px;font-weight:800;color:#ffe07b;text-shadow:0 1px 0 rgba(0,0,0,.35);white-space:nowrap}
+  #weather{font-size:13px;font-weight:800;color:#eaf6ff;opacity:.95;display:flex;align-items:center;gap:6px;white-space:nowrap}
+  #weather .wicon{font-size:15px}
+  @media (max-width:500px){.topbar{flex-direction:column;align-items:center}.title{order:1;font-size:20px}.hud{order:2}}
+
+  .subrow{display:flex;gap:8px;justify-content:center;padding:8px 12px;flex-wrap:wrap}
+  .subrow input[type="date"]{height:34px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.12);color:#eaf6ff;padding:0 10px;outline:none;font-weight:700;flex:1 1 100%;min-width:180px}
+
+  .pad{padding:10px 12px 16px;position:relative}
+  canvas{width:100% !important;height:60vh !important;display:block;background:#0b2642;border-radius:8px}
+  /* giúp mobile không quá dồn nhãn giờ */
+  canvas#chart{min-width:560px}
+  #loading{position:absolute;inset:10px 12px 16px;display:none;place-items:center;background:rgba(11,30,51,.35);backdrop-filter:saturate(140%) blur(2px);border-radius:8px}
+  #loading .spin{width:26px;height:26px;border-radius:50%;border:3px solid rgba(234,246,255,.25);border-top-color:#eaf6ff;animation:rot .9s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
+
+  /* style cũ của statsBox (không dùng) – để nguyên vô hại */
+  #statsBox{position:absolute;background:#103458;color:#eaf6ff;padding:8px 10px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.35),inset 0 0 0 1px rgba(255,255,255,.12);font-size:13px;line-height:1.35;display:none;white-space:nowrap}
+  #statsBox b{font-weight:900}
+  #sbLevel,#sbPump{color:#9acd32}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="topbar">
+      <div class="title">
+        Mặn – Trạm bơm Tứ Câu
+        <span id="titleHhN" style="font-size:16px;font-weight:700;color:#ffff66;margin-left:8px">
+          Hh: <span id="sbLevelTitle">--</span> m · N: <span id="sbPumpTitle">--</span>
+        </span>
+      </div>
+      <div class="hud">
+        <div id="weather"><span class="wicon">—</span><span id="wtext">—</span></div>
+        <div id="clock">--:--:--</div>
+      </div>
+    </div>
+
+    <div class="subrow">
+      <input id="date" type="date" />
+    </div>
+
+    <div class="pad">
+      <div id="loading"><div class="spin" aria-label="Đang tải…"></div></div>
+      <canvas id="chart"></canvas>
+      <!-- ĐÃ BỎ statsBox -->
+    </div>
+  </div>
+</div>
+
+<script>
+/* Đăng ký plugin annotation nếu có */
+if (window['chartjs-plugin-annotation']) { Chart.register(window['chartjs-plugin-annotation']); }
+
+/* === Plugin “dòng chảy” phủ lên đường mặn (ổn định trên Google Sites) === */
+const RiverSalinity = {
+  id: 'RiverSalinity',
+  afterInit(chart){
+    chart._riverTimer = setInterval(()=>{ if(!chart._destroyed) chart.draw(); }, 33); // ~30fps
+  },
+  beforeDestroy(chart){ if(chart._riverTimer) clearInterval(chart._riverTimer); },
+  afterDatasetsDraw(chart){
+    const meta = chart.getDatasetMeta(1); // dataset mặn
+    if (!meta || meta.hidden || !meta.dataset) return;
+
+    const ctx = chart.ctx;
+    const dsOpts = meta.dataset.options || {};
+    const t = (performance.now()||Date.now())/1000;
+
+    const dashLen = 10, dashGap = 8;
+    const speedPxPerSec = 60;                     // tốc độ “nước chảy”
+    const offset = -(t * speedPxPerSec);
+    const alpha  = 0.80 + 0.15*Math.sin(t*2.0);   // nhấp nháy dịu
+
+    ctx.save();
+    ctx.beginPath();
+    meta.dataset.path(ctx);
+    ctx.lineWidth   = (dsOpts.borderWidth||3.5) + 0.8;
+    ctx.strokeStyle = '#ff6b5a';
+    ctx.globalAlpha = alpha;
+    ctx.setLineDash([dashLen, dashGap]);
+    ctx.lineDashOffset = offset;
+    ctx.stroke();
+    ctx.restore();
+  }
+};
+
+/* ===== Cấu hình ===== */
+const CONFIG={
+  sheetId:"1NSokiPVlK4EowPP7Dmn5oyhqkBw1obWtv8mRwUvcFMY",
+  sheetName:"Câu trả lời biểu mẫu 1",
+  dateColumn:"Ngày", hourColumn:"Giờ",
+  salinityColumn:"Độ mặn Trạm bơm Tứ Câu",
+  levelColumn:"Mực nước bể hút (m)",
+  pumpColumn:"Số máy vận hành",
+  tideColumn:"Thủy triều",
+  unit:"‰", tideUnit:"m",
+  tz:"Asia/Ho_Chi_Minh", autoRefreshTodayMs:5*60*1000
+};
+
+/* ===== Tiện ích thời gian & CSV ===== */
+const toLocal=d=>new Date(d.toLocaleString("en-US",{timeZone:CONFIG.tz}));
+const ymd=d=>{const L=toLocal(d);return `${L.getFullYear()}-${String(L.getMonth()+1).padStart(2,"0")}-${String(L.getDate()).padStart(2,"0")}`};
+const last=a=>a?.[a.length-1];
+
+function parseDateHour(dateVal,hourVal){
+  let hs=(hourVal??"").toString().trim().toLowerCase(); if(!hs) return null;
+  hs=hs.replace(/\s/g,'').replace(/^(\d{1,2})h(\d{0,2})$/,(_,h,m)=>`${h}:${m||'00'}`);
+  const hasAMPM=/(am|pm)$/i.test(hs);
+  let d;
+  if(dateVal instanceof Date){d=new Date(dateVal.getFullYear(),dateVal.getMonth(),dateVal.getDate());}
+  else{
+    let ds=String(dateVal||"").trim(); if(!ds) return null;
+    if(/^\d+(\.\d+)?$/.test(ds)){const s=parseFloat(ds),base=new Date(Date.UTC(1899,11,30));const tmp=new Date(base.getTime()+s*86400000);d=new Date(tmp.getUTCFullYear(),tmp.getUTCMonth(),tmp.getUTCDate());}
+    else if(/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(ds)){const[dd,mm,yy]=ds.split("/").map(Number);d=new Date(yy<100?2000+yy:yy,mm-1,dd);} 
+    else if(/^\d{4}-\d{1,2}-\d{1,2}$/.test(ds)){const[Y,m,dd]=ds.split("-").map(Number);d=new Date(Y,m-1,dd);} 
+    else{const t=Date.parse(ds);if(isNaN(t))return null;d=new Date(t);} 
+  }
+  if(hasAMPM){const t=Date.parse(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${hs}`);return isNaN(t)?null:new Date(t);} 
+  const parts=hs.split(":").map(Number);return new Date(d.getFullYear(),d.getMonth(),d.getDate(),parts[0]||0,parts[1]||0,parts[2]||0);
+}
+function csvUrl(id,sheet){return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheet)}`;}
+function fetchCsv(url){return new Promise((res,rej)=>{Papa.parse(url,{download:true,header:true,skipEmptyLines:true,complete:r=>res(r.data),error:rej});});}
+
+/* ===== Thời tiết ===== */
+async function loadWeather(){
+  const lat=15.96,lon=108.25;
+  try{
+    const r=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=Asia%2FHo_Chi_Minh`);
+    const j=await r.json();const t=Math.round(j.current.temperature_2m);const code=j.current.weather_code;
+    const map={0:["☀️","Quang mây"],1:["🌤️","Ít mây"],2:["⛅","Mây vừa"],3:["☁️","Nhiều mây"],45:["🌫️","Sương mù"],48:["🌫️","Sương băng"],51:["🌦️","Phùn nhẹ"],53:["🌦️","Phùn"],55:["🌧️","Phùn to"],61:["🌧️","Mưa nhẹ"],63:["🌧️","Mưa"],65:["🌧️","Mưa to"],80:["🌦️","Rào"],81:["🌦️","Rào"],82:["🌧️","Rào mạnh"],95:["⛈️","Dông"],96:["⛈️","Dông đá"],99:["⛈️","Dông mạnh"]};
+    const w=map[code]||["ℹ️","—"];document.querySelector("#weather .wicon").textContent=w[0];document.getElementById("wtext").textContent=`${t}° · ${w[1]}`;
+  }catch{document.getElementById("wtext").textContent="—";}
+}
+
+/* ===== Loader ===== */
+const $loading=document.getElementById('loading');
+function showLoading(b){$loading.style.display=b?'grid':'none';}
+
+/* ===== Đọc dữ liệu ===== */
+async function loadAllPoints(dayStr){
+  showLoading(true);
+  try{
+    const rows=await fetchCsv(csvUrl(CONFIG.sheetId,CONFIG.sheetName));
+    const dKey=CONFIG.dateColumn.toLowerCase(),hKey=CONFIG.hourColumn.toLowerCase(),
+          sKey=CONFIG.salinityColumn.toLowerCase(),lKey=CONFIG.levelColumn.toLowerCase(),
+          pKey=CONFIG.pumpColumn.toLowerCase(),tKey=(CONFIG.tideColumn||"").toLowerCase();
+    const out=[];
+    for(const r of rows){
+      const o=Object.fromEntries(Object.entries(r).map(([k,v])=>[String(k).toLowerCase().trim(),v]));
+      const t=parseDateHour(o[dKey],o[hKey]);
+      const v=Math.max(0,Number(String(o[sKey]).replace(/,/g,'.').replace(/\s/g,'')));
+      const lvl=o[lKey]!=null&&o[lKey]!==''?Number(String(o[lKey]).replace(/,/g,'.').replace(/\s/g,'')):null;
+      const pump=o[pKey]!=null&&o[pKey]!==''?Number(String(o[pKey]).replace(/\s/g,'')):null;
+      const tide=(tKey&&o[tKey]!=null&&o[tKey]!=='')?Number(String(o[tKey]).replace(/,/g,'.').replace(/\s/g,'')):null;
+      if(t&&isFinite(v)) out.push({t,v,lvl:isFinite(lvl)?lvl:null,pump:isFinite(pump)?pump:null,tide:(tide!=null&&isFinite(tide))?tide:null});
+    }
+    out.sort((a,b)=>a.t-b.t);
+    return out;
+  }catch(e){console.error(e);return [];} 
+  finally{showLoading(false);} 
+}
+
+/* ===== Làm mượt thủy triều: Monotone Cubic Hermite + resample 24h ===== */
+function resampleTideSmooth(tidePoints, dayStr, stepMin=3){
+  const start=new Date(`${dayStr}T00:00:00`).getTime();
+  const end  =new Date(`${dayStr}T23:59:59.999`).getTime();
+  const step = stepMin*60*1000;
+
+  const pts=tidePoints.slice().sort((a,b)=>a.t-b.t).filter(p=>p.tide!=null);
+  if(pts.length===0){ return []; }
+
+  const xs=pts.map(p=>p.t.getTime()), ys=pts.map(p=>p.tide);
+  const n=xs.length;
+
+  const h=new Array(n-1), d=new Array(n-1);
+  for(let i=0;i<n-1;i++){ h[i]=xs[i+1]-xs[i]; d[i]=(ys[i+1]-ys[i])/h[i]; }
+
+  const m=new Array(n);
+  m[0]=d[0]; m[n-1]=d[n-2];
+  for(let i=1;i<n-1;i++){
+    if(d[i-1]*d[i] <= 0){ m[i]=0; }
+    else{
+      const w1 = 2*h[i] + h[i-1];
+      const w2 = h[i] + 2*h[i-1];
+      m[i] = (w1 + w2) / ( (w1/d[i-1]) + (w2/d[i]) );
+    }
+  }
+
+  function evalAt(tms){
+    if(tms<=xs[0]) return ys[0];
+    if(tms>=xs[n-1]) return ys[n-1];
+    let j=1; while(j<xs.length && tms>xs[j]) j++;
+    j=j-1;
+    const hj = xs[j+1]-xs[j];
+    const s  = (tms - xs[j]) / hj;
+    const h00 = (2*s**3 - 3*s**2 + 1);
+    const h10 = (s**3 - 2*s**2 + s);
+    const h01 = (-2*s**3 + 3*s**2);
+    const h11 = (s**3 - s**2);
+    return h00*ys[j] + h10*hj*m[j] + h01*ys[j+1] + h11*hj*m[j+1];
+  }
+
+  const out=[];
+  for(let t=start; t<=end; t+=step){
+    out.push({ t:new Date(t), tide: +evalAt(t).toFixed(3) });
+  }
+  return out;
+}
+
+/* ===== Nền đêm–ngày, vạch “bây giờ”, bóng & bubble ===== */
+const DayNight={id:"dayNight",beforeDraw:(ch)=>{const a=ch.chartArea;if(!a)return;const x=ch.scales.x;if(!x||!isFinite(x.min)||!isFinite(x.max))return;
+  const pick=document.getElementById("date").value||ymd(new Date());const base=new Date(`${pick}T00:00:00`);
+  const px0=x.getPixelForValue(base),px6=x.getPixelForValue(new Date(base.getTime()+6*3600e3)),px18=x.getPixelForValue(new Date(base.getTime()+18*3600e3)),px24=x.getPixelForValue(new Date(base.getTime()+24*3600e3));
+  const ctx=ch.ctx;ctx.save();ctx.fillStyle="rgba(18,58,98,.55)";ctx.fillRect(px0,a.top,px6-px0,a.bottom-a.top);
+  ctx.fillStyle="rgba(223,232,191,.55)";ctx.fillRect(px6,a.top,px18-px6,a.bottom-a.top);
+  ctx.fillStyle="rgba(18,58,98,.55)";ctx.fillRect(px18,a.top,px24-px18,a.bottom-a.top);ctx.restore();}};
+const NowLine={id:"nowLine",afterDraw:(ch)=>{const{x,y}=ch.scales,now=new Date();if(!x||!y)return;const px=x.getPixelForValue(now);if(!(px>=x.left&&px<=x.right))return;
+  const c=ch.ctx;c.save();c.strokeStyle="#9acd32";c.setLineDash([6,6]);c.lineWidth=2;c.beginPath();c.moveTo(px,y.top);c.lineTo(px,y.bottom);c.stroke();c.restore();}};
+const StrokeGlow={id:"strokeGlow",beforeDatasetsDraw(c){c.ctx.save();c.ctx.shadowColor="rgba(255,59,48,.45)";c.ctx.shadowBlur=10;},afterDatasetsDraw(c){c.ctx.restore();}};
+const NowBubble={id:"nowBubble",afterDatasetsDraw(c){const meta=c.getDatasetMeta(1),pts=meta&&meta.data;if(!pts||!pts.length)return;
+  const lastPt=pts[pts.length-1];const p=lastPt.getProps(['x','y'],true);const v=last(c.data.datasets[1].data);if(!v)return;
+  const ctx=c.ctx,txt=`${Number(v.y).toFixed(2)} ${CONFIG.unit}`;ctx.save();ctx.font="900 12px system-ui,Segoe UI,Arial";
+  const pad=6,h=22,w=ctx.measureText(txt).width+pad*2,rx=8;const bx=Math.min(Math.max(p.x-w/2,c.scales.x.left+4),c.scales.x.right-w-4),by=p.y-34;
+  ctx.fillStyle="#fff";ctx.strokeStyle="#e6eefb";ctx.beginPath();ctx.moveTo(bx+rx,by);ctx.arcTo(bx+w,by,bx+w,by+h,rx);ctx.arcTo(bx+w,by+h,bx,by+h,rx);
+  ctx.arcTo(bx,by+h,bx,by,rx);ctx.arcTo(bx,by,bx+w,by,rx);ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.beginPath();ctx.moveTo(p.x,by+h);ctx.lineTo(p.x-6,by+h+8);ctx.lineTo(p.x+6,by+h);ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.fillStyle="#062b45";ctx.textBaseline="middle";ctx.fillText(txt,bx+pad,by+h/2);ctx.restore();}};
+
+/* ===== Biểu đồ ===== */
+let chart,cacheAll=[],minDateStr=null,maxDateStr=null,autoTimer=null;
+const ctxChart=document.getElementById("chart").getContext("2d");
+
+function initChart(){
+  if(chart) chart.destroy();
+  chart=new Chart(ctxChart,{type:"line",
+    data:{datasets:[
+      {data:[],parsing:false,pointRadius:0,borderWidth:0,backgroundColor:"rgba(111,177,241,.18)",fill:true,xAxisID:'x',yAxisID:'y'},
+      { // dataset mặn
+        data:[], parsing:false, pointRadius:0, pointHitRadius:16,
+        borderWidth:3.5, tension:0.5, cubicInterpolationMode:"monotone",
+        borderColor:"#ff3b30", fill:false, xAxisID:'x', yAxisID:'y',
+        borderCapStyle:'round', borderJoinStyle:'round'
+      },
+      { // dataset thủy triều
+        data:[], parsing:false, pointRadius:0, pointHitRadius:16,
+        borderWidth:2.5, tension:0.5, cubicInterpolationMode:"monotone",
+        borderColor:"#ffff66", fill:false, xAxisID:'x', yAxisID:'y2',
+        borderCapStyle:'round', borderJoinStyle:'round'
+      }
+    ]},
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false,
+      interaction:{mode:'nearest',intersect:true,axis:'x'},
+      scales:{
+        x:{
+          type:"time",
+          time:{ unit:"hour", stepSize:1, displayFormats:{hour:"HH:mm"} },
+          ticks:{
+            autoSkip:false,
+            maxRotation:60, minRotation:60,
+            font:{weight:700},
+            color:"#7CFC00",
+            callback:function(value){
+              const d=new Date(value), h=d.getHours(), m=d.getMinutes();
+              const wanted=new Set([0,2,4,6,8,10,12,16,18,20,22]);
+              if(m===0 && wanted.has(h)) return (h<10?`0${h}`:h)+":00";
+              // Nhãn “24:00” sẽ được vẽ khi value === x.max (đặt ở setDataset)
+              if(value===this.max) return "24:00";
+              return "";
+            }
+          },
+          grid:{color:"rgba(255,255,255,.08)"}
+        },
+        y:{
+          min:0, max:1,
+          ticks:{color:"#d9edff",stepSize:0.2,font:{weight:800}},
+          title:{display:true,text:`Mặn (${CONFIG.unit})`,color:"#ff3b30"},
+          grid:{color:"rgba(255,255,255,.08)"}
+        },
+        y2:{
+          position:'right',
+          grid:{drawOnChartArea:false},
+          ticks:{color:"#bfe6ff"},
+          title:{display:true,text:`Thủy triều (${CONFIG.tideUnit})`,color:"#ffff66"}
+        }
+      },
+      plugins:{
+        legend:{display:false},
+        tooltip:{backgroundColor:"rgba(255,255,255,.96)",titleColor:"#002b45",bodyColor:"#002b45",borderColor:"#e1ecff",borderWidth:1,
+          callbacks:{
+            title(items){const ts=items[0].parsed.x;return new Date(ts).toLocaleTimeString("vi-VN",{hour:"2-digit",minute:"2-digit"});},
+            label(ctx){const ds=ctx.datasetIndex,v=ctx.parsed.y;
+              if(ds===1) return ` Mặn: ${v?.toFixed(2)} ${CONFIG.unit}`;
+              if(ds===2) return ` Thủy triều: ${v?.toFixed(2)} ${CONFIG.tideUnit}`;
+              return '';
+            }
+        }},
+        annotation:{annotations:{mLine08:{type:'line',yScaleID:'y',yMin:0.8,yMax:0.8,borderColor:'red',borderWidth:2,borderDash:[6,6],
+          label:{enabled:true,content:'Ngưỡng 0.8‰',position:'start',backgroundColor:'rgba(255,0,0,.85)',color:'#fff',font:{weight:'bold',size:11},padding:4}}}}
+      },
+      elements:{point:{radius:0,hitRadius:16}}
+    },
+    plugins:[DayNight,NowLine,StrokeGlow,NowBubble,RiverSalinity]
+  });
+}
+
+function setDataset(line,area,tide,dayStr,yMax,y2Range){
+  const ymax=Math.max(0.2,Math.ceil((yMax+0.001)/0.2)*0.2);
+  chart.options.scales.x.min=new Date(`${dayStr}T00:00:00`);
+  // X.max = 24:00 (00:00 hôm sau) để có nhãn "24:00"
+  chart.options.scales.x.max=new Date(new Date(`${dayStr}T00:00:00`).getTime()+24*3600e3);
+  chart.options.scales.y.max=ymax;
+  if(y2Range && isFinite(y2Range.min) && isFinite(y2Range.max)){
+    const pad=(y2Range.max-y2Range.min)*0.1||0.1;
+    chart.options.scales.y2.min=y2Range.min-pad;
+    chart.options.scales.y2.max=y2Range.max+pad;
+  }
+  chart.data.datasets[0].data=area.map(p=>({x:p.t,y:p.v}));
+  chart.data.datasets[1].data=line.map(p=>({x:p.t,y:p.v}));
+  chart.data.datasets[2].data=tide.map(p=>({x:p.t,y:p.tide}));
+  chart.update(); positionStatsBox();
+}
+
+/* ===== Tiện ích ngày & Hh/N theo giờ gần nhất ===== */
+const dateEl=document.getElementById("date");
+function clampDateStr(s){if(!minDateStr||!maxDateStr)return s; if(s<minDateStr)return minDateStr; if(s>maxDateStr)return maxDateStr; return s;}
+function sliceByDay(points,dStr){const s=new Date(`${dStr}T00:00:00`),e=new Date(`${dStr}T23:59:59.999`);return points.filter(p=>p.t>=s&&p.t<=e);} 
+function nearestRecord(points, target){
+  let best=null, bestDt=Infinity, t0=target.getTime();
+  for(const p of points){
+    const hasLvl = p.lvl!=null && isFinite(p.lvl);
+    const hasPump= p.pump!=null && isFinite(p.pump);
+    if(!hasLvl && !hasPump) continue;
+    const dt=Math.abs(p.t.getTime()-t0);
+    if(dt<bestDt){ best=p; bestDt=dt; }
+  }
+  return best;
+}
+function predictNowFromLast3(points,when){
+  const before=points.filter(p=>p.t<=when); if(!before.length) return null;
+  const k=Math.min(3,before.length), lastK=before.slice(-k); if(k===1) return Math.max(0,lastK[0].v);
+  const t0=lastK[0].t.getTime(), xs=lastK.map(p=>(p.t.getTime()-t0)/3600000), ys=lastK.map(p=>p.v);
+  const n=k,sumX=xs.reduce((s,x)=>s+x,0),sumY=ys.reduce((s,y)=>s+y,0),sumXX=xs.reduce((s,x)=>s+x*x,0),sumXY=xs.reduce((s,_,i)=>s+xs[i]*ys[i],0);
+  const denom=(n*sumXX-sumX*sumX),a=denom!==0?(n*sumXY-sumX*sumY)/denom:0,b=(sumY-a*sumX)/n,xNow=(when.getTime()-t0)/3600000;
+  return Math.max(0,a*xNow+b);
+}
+
+async function refreshAll(){
+  const dayStr=dateEl.value||ymd(new Date());
+  cacheAll=await loadAllPoints(dayStr);
+
+  if(cacheAll.length){
+    minDateStr=ymd(cacheAll[0].t); maxDateStr=ymd(last(cacheAll).t);
+    dateEl.min=minDateStr; dateEl.max=maxDateStr;
+  }
+  renderForPickedDate();
+}
+
+function renderForPickedDate(){
+  const pick0=dateEl.value||ymd(new Date()); const pick=clampDateStr(pick0); if(pick!==pick0) dateEl.value=pick;
+  const dayPts=sliceByDay(cacheAll,pick);
+
+  let line=dayPts.slice(), area=dayPts.slice();
+  let yMax=dayPts.length?Math.max(...dayPts.map(p=>p.v)):0.2;
+
+  // Thủy triều: làm mượt + resample 15'
+  const tideRaw=dayPts.filter(p=>p.tide!=null);
+  let tideSmooth=[];
+  if(tideRaw.length){
+    tideSmooth=resampleTideSmooth(tideRaw,pick,15);
+  }
+
+  let y2Range=null;
+  if(tideSmooth.length){
+    const vals=tideSmooth.map(p=>p.tide);
+    y2Range={min:Math.min(...vals),max:Math.max(...vals)};
+  }
+
+  // Hôm nay: thêm điểm nội suy thời gian thực
+  if(pick===ymd(new Date())){
+    const now=new Date();
+    const vNow=predictNowFromLast3(dayPts,now);
+    if(vNow!=null){
+      const lastPoint={t:now,v:vNow};
+      const merged=dayPts.filter(p=>p.t<=now).concat([lastPoint]);
+      line=merged; area=merged; yMax=Math.max(yMax,vNow);
+    }
+    startAutoRefresh();
+  }else{
+    stopAutoRefresh();
+  }
+
+  // Hh/N trên thanh tiêu đề (bản ghi gần thời gian thực)
+  let showLvl=null, showPump=null;
+  if (pick === ymd(new Date())) {
+    const recNow = nearestRecord(dayPts, new Date());
+    if (recNow){
+      showLvl  = (recNow.lvl!=null && isFinite(recNow.lvl)) ? recNow.lvl : null;
+      showPump = (recNow.pump!=null && isFinite(recNow.pump)) ? recNow.pump : null;
+    }
+  } else {
+    const recLast = [...dayPts].reverse().find(r =>
+      (r.lvl!=null && isFinite(r.lvl)) || (r.pump!=null && isFinite(r.pump))
+    );
+    if (recLast){
+      showLvl  = (recLast.lvl!=null && isFinite(recLast.lvl)) ? recLast.lvl : null;
+      showPump = (recLast.pump!=null && isFinite(recLast.pump)) ? recLast.pump : null;
+    }
+  }
+  document.getElementById("sbLevelTitle").textContent = (showLvl!=null)  ? Number(showLvl).toFixed(2) : "--";
+  document.getElementById("sbPumpTitle").textContent  = (showPump!=null) ? String(showPump) : "--";
+
+  setDataset(line,area,tideSmooth,pick,yMax,y2Range);
+}
+
+/* Vuốt ngày */
+function shiftPickedDate(days){const cur=dateEl.value?new Date(dateEl.value):new Date();const nxt=new Date(cur.getTime()+days*86400000);dateEl.value=clampDateStr(ymd(nxt));renderForPickedDate();}
+(function enableSwipe(){const el=document.getElementById('chart');let sx=0,sy=0,moved=false,touch=false,t0=0;
+  el.addEventListener('touchstart',e=>{if(e.touches.length!==1)return;const t=e.touches[0];sx=t.clientX;sy=t.clientY;moved=false;touch=true;t0=Date.now();},{passive:true});
+  el.addEventListener('touchmove',()=>{if(touch)moved=true;},{passive:true});
+  el.addEventListener('touchend',e=>{if(!touch)return;touch=false;if(!moved)return;const dx=e.changedTouches[0].clientX-sx;const dy=e.changedTouches[0].clientY-sy;const dur=Date.now()-t0;
+    const fast=dur<250?30:40;if(Math.abs(dx)>fast&&Math.abs(dy)<60){dx<0?shiftPickedDate(+1):shiftPickedDate(-1);}},{passive:true});
+})();
+
+/* Đồng hồ + vị trí stats + auto refresh + thời tiết */
+function updateClock(){const now=toLocal(new Date());const hh=String(now.getHours()).padStart(2,'0'),mm=String(now.getMinutes()).padStart(2,'0'),ss=String(now.getSeconds()).padStart(2,'0');document.getElementById("clock").textContent=`${hh}:${mm}:${ss}`;}
+function positionStatsBox(){ if(!chart || !chart.chartArea) return; const sb=document.getElementById("statsBox"); if(!sb) return; const a=chart.chartArea; sb.style.left=(a.right-sb.offsetWidth-10)+"px"; sb.style.top=(a.top+10)+"px"; sb.style.display="block"; }
+window.addEventListener('resize',()=>setTimeout(positionStatsBox,60));
+function startAutoRefresh(){stopAutoRefresh();autoTimer=setInterval(refreshAll,CONFIG.autoRefreshTodayMs);}
+function stopAutoRefresh(){if(autoTimer){clearInterval(autoTimer);autoTimer=null;}}
+
+/* Khởi động */
+function setTodayValue(){const el=document.getElementById('date');const t=ymd(new Date());if(!el.value) el.value=t;}
+(function boot(){
+  initChart(); setTodayValue(); refreshAll().then(()=>{positionStatsBox();});
+  setInterval(updateClock,1000); updateClock();
+  loadWeather(); setInterval(loadWeather,15*60*1000);
+  document.getElementById("date").onchange=renderForPickedDate;
+})();
+</script>
+</body>
+</html>
