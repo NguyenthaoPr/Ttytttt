@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>Bản đồ công trình Thuỷ lợi</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body, #map { height: 100%; margin: 0; padding: 0; }
+    #menu {
+      position: absolute;
+      top: 10px; left: 10px;
+      z-index: 1000;
+      background: #f9f9f9;
+      border-radius: 4px;
+      padding: 6px;
+      font-family: sans-serif;
+      box-shadow: 0 0 5px rgba(0,0,0,0.3);
+    }
+    .marker-label {
+      color: white;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      border: 1px solid white;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+<div id="menu">
+  <label for="layerSelect"><b>Chọn lớp dữ liệu:</b></label>
+  <select id="layerSelect">
+    <option value="mucnuoc">Mực nước</option>
+    <option value="luuluong">Lưu lượng</option>
+    <option value="doman">Độ mặn</option>
+  </select>
+</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const map = L.map('map').setView([15.75, 108.2], 9);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+  const congTrinh = [
+    { ten: "Hồ Phước Hà", lat: 15.5821, lng: 108.3356, mucnuoc: 422, luuluong: 0.0, doman: 0.1, trangthai: "Bình thường" },
+    { ten: "Trạm bơm Cẩm Sa", lat: 15.8365, lng: 108.2743, mucnuoc: 312, luuluong: 6.5, doman: 1.5, trangthai: "Đang bơm" },
+    { ten: "Cống Khe Tân", lat: 15.7225, lng: 108.1968, mucnuoc: 190, luuluong: 0.0, doman: 0.0, trangthai: "Đóng" },
+    { ten: "Trạm xả Ái Nghĩa", lat: 15.8443, lng: 108.1439, mucnuoc: 476, luuluong: 12.5, doman: 0.0, trangthai: "Đang xả" },
+    { ten: "Cống Hạ Lộc", lat: 15.8152, lng: 108.2164, mucnuoc: 260, luuluong: 0.0, doman: 2.1, trangthai: "Đóng" },
+    { ten: "Hồ Sông Tranh 2", lat: 15.3790, lng: 108.2044, mucnuoc: 842, luuluong: 88.4, doman: 0.0, trangthai: "Xả lớn" },
+    { ten: "Cống Trà Nhiêu", lat: 15.8788, lng: 108.1921, mucnuoc: 120, luuluong: 1.2, doman: 3.2, trangthai: "Ngăn mặn" },
+    { ten: "Trạm bơm La Thọ", lat: 15.7932, lng: 108.1225, mucnuoc: 400, luuluong: 7.0, doman: 1.0, trangthai: "Đang bơm" }
+  ];
+
+  const mauTrangThai = {
+    "Bình thường": "#2ecc71",
+    "Đang bơm": "#3498db",
+    "Đang xả": "#e67e22",
+    "Xả lớn": "#e74c3c",
+    "Ngăn mặn": "#9b59b6",
+    "Đóng": "#95a5a6"
+  };
+
+  let markerGroup = L.layerGroup().addTo(map);
+
+  function renderMarkers(lop) {
+    markerGroup.clearLayers();
+    congTrinh.forEach(ct => {
+      const color = mauTrangThai[ct.trangthai] || "#34495e";
+      let value = ct[lop];
+      let donvi = lop === 'mucnuoc' ? 'cm' : (lop === 'luuluong' ? 'm³/s' : '‰');
+      const icon = L.divIcon({
+        className: "custom-icon",
+        html: `<div class="marker-label" style="background-color:${color}">${value} ${donvi}</div>`,
+        iconSize: [60, 20],
+        iconAnchor: [30, 10]
+      });
+      const marker = L.marker([ct.lat, ct.lng], { icon }).addTo(markerGroup);
+      marker.bindPopup(`<b>${ct.ten}</b><br>Mực nước: ${ct.mucnuoc} cm<br>Lưu lượng: ${ct.luuluong} m³/s<br>Độ mặn: ${ct.doman} ‰<br>Trạng thái: ${ct.trangthai}`);
+    });
+  }
+
+  document.getElementById('layerSelect').addEventListener('change', (e) => {
+    renderMarkers(e.target.value);
+  });
+
+  // Mặc định
+  renderMarkers('mucnuoc');
+</script>
+</body>
+</html>
